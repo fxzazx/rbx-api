@@ -5,14 +5,15 @@ from urllib.parse import urlencode
 import discord
 from discord.ext import commands
 import asyncio
+import threading
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # Chave secreta para sessões
 
-# Configurações do Discord (substitua com suas credenciais)
+# Configurações do Discord
 DISCORD_CLIENT_ID = "1410041223317815326"
 DISCORD_CLIENT_SECRET = "AAn09cOYRlFaeQ2UnltvPqAjM74kkrXk"
-DISCORD_REDIRECT_URI = "https://sua-api.render.com/callback"
+DISCORD_REDIRECT_URI = "https://rbx-api-zk4m.onrender.com/callback"
 DISCORD_BOT_TOKEN = "MTQxMDA0MTIyMzMxNzgxNTMyNg.GMRJSn.qowNLXPpAtLiROOIbm2PhXWg1EtCxAtbWUqdKs"
 DISCORD_CHANNEL_ID = 1410037654216773745  # ID do canal
 
@@ -127,14 +128,19 @@ def change_name(player_id, new_name):
     
     return jsonify({"error": "ID não encontrado"}), 404
 
-# Função para rodar Flask e bot do Discord
+# Função para rodar o bot do Discord
+def run_bot():
+    bot.run(DISCORD_BOT_TOKEN)
+
+# Função para rodar Flask
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
 
 if __name__ == "__main__":
     # Iniciar bot do Discord em uma thread separada
-    loop = asyncio.get_event_loop()
-    loop.create_task(bot.start(DISCORD_BOT_TOKEN))
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.daemon = True  # Encerrar thread quando o programa principal terminar
+    bot_thread.start()
     
     # Iniciar Flask
     run_flask()
