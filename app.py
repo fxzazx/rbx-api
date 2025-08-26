@@ -2,10 +2,8 @@ from flask import Flask, request, redirect, jsonify, session
 import requests
 import os
 from urllib.parse import urlencode
-import discord
-from discord.ext import commands
-import asyncio
 import threading
+import time
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # Chave secreta para sessões
@@ -16,15 +14,12 @@ DISCORD_CLIENT_SECRET = "AAn09cOYRlFaeQ2UnltvPqAjM74kkrXk"
 DISCORD_REDIRECT_URI = "https://rbx-api-zk4m.onrender.com/callback"
 DISCORD_BOT_TOKEN = "MTQxMDA0MTIyMzMxNzgxNTMyNg.GMRJSn.qowNLXPpAtLiROOIbm2PhXWg1EtCxAtbWUqdKs"
 DISCORD_CHANNEL_ID = 1410037654216773745  # ID do canal
+DISCORD_API = "https://discord.com/api/v10"
 
 # Armazenamento temporário (use banco de dados em produção)
 player_data = {}  # {roblox_user_id: {"id": int, "username": str}}
 available_ids = list(range(1, 1001))  # IDs de 1 a 1000
-
-# Configurar bot do Discord
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+webhook_messages = []  # Armazena mensagens recebidas do webhook
 
 # Função para atribuir ID único
 def assign_id():
@@ -32,22 +27,39 @@ def assign_id():
         return available_ids.pop(0)
     return None
 
-# Comando !login no Discord
-@bot.command()
-async def login(ctx, roblox_user_id: str):
-    if not roblox_user_id.isdigit():
-        await ctx.send("Por favor, forneça um UserId válido do Roblox.")
-        return
+# Função para enviar mensagem ao canal do Discord
+def send_discord_message(message):
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}", "Content-Type": "application/json"}
+    data = {"content": message}
+    response = requests.post(f"{DISCORD_API}/channels/{DISCORD_CHANNEL_ID}/messages", json=data, headers=headers)
+    return response.status_code == 200
+
+# Rota para receber comandos do webhook do Discord
+@app.route('/webhook', methods=['POST'])
+def discord_webhook():
+    data = request.json
+    if not data or 'content' not in data:
+        return jsonify({"error": "Dados inválidos"}), 400
     
-    params = {
-        "client_id": DISCORD_CLIENT_ID,
-        "redirect_uri": DISCORD_REDIRECT_URI,
-        "response_type": "code",
-        "scope": "identify",
-        "state": roblox_user_id  # Passar UserId como state
-    }
-    auth_url = f"https://discord.com/api/oauth2/authorize?{urlencode(params)}"
-    await ctx.send(f"Logue no Discord clicando aqui: {auth_url}")
+    content = data['content']
+    if content.startswith('!login'):
+        parts = content.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            send_discord_message("Por favor, forneça um UserId válido do Roblox. Exemplo: !login 123456")
+            return jsonify({"status": "processed"}), 200
+        
+        roblox_user_id = parts[1]
+        params = {
+            "client_id": DISCORD_CLIENT_ID,
+            "redirect_uri": DISCORD_REDIRECT_URI,
+            "response_type": "code",
+            "scope": "identify",
+            "state": roblox_user_id
+        }
+        auth_url = f"https://discord.com/api/oauth2/authorize?{urlencode(params)}"
+        send_discord_message(f"Logue no Discord clicando aqui: {auth_url}")
+    
+    return jsonify({"status": "processed"}), 200
 
 # Rota de callback do Discord
 @app.route('/callback')
@@ -93,12 +105,7 @@ def callback():
     player_data[roblox_user_id] = {"id": player_id, "username": discord_username}
 
     # Enviar mensagem ao canal do Discord
-    async def send_discord_message():
-        channel = bot.get_channel(DISCORD_CHANNEL_ID)
-        if channel:
-            await channel.send(f"Jogador com ID {player_id} (UserId {roblox_user_id}) logou com Discord: {discord_username}")
-
-    asyncio.run_coroutine_threadsafe(send_discord_message(), bot.loop)
+    send_discord_message(f"Jogador com ID {player_id} (UserId {roblox_user_id}) logou com Discord: {discord_username}")
     
     return jsonify({"status": "success", "id": player_id, "username": discord_username})
 
@@ -119,28 +126,10 @@ def change_name(player_id, new_name):
     for roblox_user_id, data in player_data.items():
         if data["id"] == player_id:
             data["username"] = new_name
-            async def send_discord_message():
-                channel = bot.get_channel(DISCORD_CHANNEL_ID)
-                if channel:
-                    await channel.send(f"Nome do jogador com ID {player_id} alterado para: {new_name}")
-            asyncio.run_coroutine_threadsafe(send_discord_message(), bot.loop)
+            send_discord_message(f"Nome do jogador com ID {player_id} alterado para: {new_name}")
             return jsonify({"status": "success", "new_name": new_name})
     
     return jsonify({"error": "ID não encontrado"}), 404
 
-# Função para rodar o bot do Discord
-def run_bot():
-    bot.run(DISCORD_BOT_TOKEN)
-
-# Função para rodar Flask
-def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
 if __name__ == "__main__":
-    # Iniciar bot do Discord em uma thread separada
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.daemon = True  # Encerrar thread quando o programa principal terminar
-    bot_thread.start()
-    
-    # Iniciar Flask
-    run_flask()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
