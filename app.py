@@ -19,13 +19,7 @@ DISCORD_API = "https://discord.com/api/v10"
 # Armazenamento temporário (use banco de dados em produção)
 player_data = {}  # {roblox_user_id: {"id": int, "username": str}}
 available_ids = list(range(1, 1001))  # IDs de 1 a 1000
-webhook_messages = []  # Armazena mensagens recebidas do webhook
-
-# Função para atribuir ID único
-def assign_id():
-    if available_ids:
-        return available_ids.pop(0)
-    return None
+last_message_id = None  # Para rastrear a última mensagem processada
 
 # Função para enviar mensagem ao canal do Discord
 def send_discord_message(message):
@@ -34,32 +28,45 @@ def send_discord_message(message):
     response = requests.post(f"{DISCORD_API}/channels/{DISCORD_CHANNEL_ID}/messages", json=data, headers=headers)
     return response.status_code == 200
 
-# Rota para receber comandos do webhook do Discord
-@app.route('/webhook', methods=['POST'])
-def discord_webhook():
-    data = request.json
-    if not data or 'content' not in data:
-        return jsonify({"error": "Dados inválidos"}), 400
-    
-    content = data['content']
-    if content.startswith('!login'):
-        parts = content.split()
-        if len(parts) != 2 or not parts[1].isdigit():
-            send_discord_message("Por favor, forneça um UserId válido do Roblox. Exemplo: !login 123456")
-            return jsonify({"status": "processed"}), 200
+# Função para verificar mensagens no canal
+def poll_discord_messages():
+    global last_message_id
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+    while True:
+        try:
+            # Obter as últimas mensagens do canal
+            params = {"limit": 10}
+            if last_message_id:
+                params["after"] = last_message_id
+            response = requests.get(f"{DISCORD_API}/channels/{DISCORD_CHANNEL_ID}/messages", headers=headers, params=params)
+            
+            if response.status_code == 200:
+                messages = response.json()
+                for message in reversed(messages):  # Processar da mais antiga para a mais recente
+                    message_id = message["id"]
+                    content = message["content"]
+                    if message_id > last_message_id if last_message_id else True:
+                        last_message_id = message_id
+                        if content.startswith("!login"):
+                            parts = content.split()
+                            if len(parts) != 2 or not parts[1].isdigit():
+                                send_discord_message("Por favor, forneça um UserId válido do Roblox. Exemplo: !login 123456")
+                                continue
+                            
+                            roblox_user_id = parts[1]
+                            params = {
+                                "client_id": DISCORD_CLIENT_ID,
+                                "redirect_uri": DISCORD_REDIRECT_URI,
+                                "response_type": "code",
+                                "scope": "identify",
+                                "state": roblox_user_id
+                            }
+                            auth_url = f"https://discord.com/api/oauth2/authorize?{urlencode(params)}"
+                            send_discord_message(f"Logue no Discord clicando aqui: {auth_url}")
+        except Exception as e:
+            print(f"Erro ao verificar mensagens: {e}")
         
-        roblox_user_id = parts[1]
-        params = {
-            "client_id": DISCORD_CLIENT_ID,
-            "redirect_uri": DISCORD_REDIRECT_URI,
-            "response_type": "code",
-            "scope": "identify",
-            "state": roblox_user_id
-        }
-        auth_url = f"https://discord.com/api/oauth2/authorize?{urlencode(params)}"
-        send_discord_message(f"Logue no Discord clicando aqui: {auth_url}")
-    
-    return jsonify({"status": "processed"}), 200
+        time.sleep(5)  # Verificar a cada 5 segundos
 
 # Rota de callback do Discord
 @app.route('/callback')
@@ -132,4 +139,10 @@ def change_name(player_id, new_name):
     return jsonify({"error": "ID não encontrado"}), 404
 
 if __name__ == "__main__":
+    # Iniciar thread para verificar mensagens do Discord
+    message_thread = threading.Thread(target=poll_discord_messages)
+    message_thread.daemon = True
+    message_thread.start()
+    
+    # Iniciar Flask
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
